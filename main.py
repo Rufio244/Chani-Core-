@@ -135,3 +135,25 @@ async def list_shared_capabilities(db: Session = Depends(get_db)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+# main.py
+import os
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI(
+    title="Chani Core",
+    description="Chani Core ระบบแกนกลาง (Version 1.0)",
+    version="1.0"
+)
+
+# เพิ่มการระบุเวอร์ชันชัดเจนในหน้าหลัก
+@app.get("/")
+def system_info():
+    return {
+        "system": "Chani Core",
+        "version": "1.0",
+        "status": "stable",
+        "description": "นี่คือ Chani Core เวอร์ชัน 1.0 เท่านั้น"
+    }
+
+# ... (ส่วนของโค้ด API เดิม)
