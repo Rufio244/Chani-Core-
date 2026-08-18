@@ -1,71 +1,135 @@
 from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
-from typing import Dict, List, Optional
-import uuid
+from sqlalchemy import create_engine, Column, Integer, String, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+import requests
+import math
 
 app = FastAPI(
-    title="Chani Core - Multi-User Shared Intelligence Platform",
-    version="2.0.0",
-    description="ระบบแพลตฟอร์มกลางสำหรับเชื่อมต่อและแชร์ความสามารถของ Chani Core ระหว่างผู้ใช้งาน"
+    title="Chani Core - Advanced Production Platform",
+    version="3.0.0",
+    description="ระบบแกนกลางที่รองรับฐานข้อมูลจริง, การคำนวณขั้นสูง และการเชื่อมต่อ API ภายนอก"
 )
 
-# ฐานข้อมูลจำลองสำหรับเก็บข้อมูลผู้ใช้และ Plugin ความสามารถ
-fake_users_db: Dict[str, dict] = {
-    "user_token_alpha_123": {"username": "Developer_A", "role": "creator", "shared_capabilities": ["math-solver", "card-logic"]},
-    "user_token_beta_456": {"username": "User_B", "role": "standard", "shared_capabilities": ["data-analysis"]}
-}
+# --- 1. ตั้งค่าระบบฐานข้อมูลจริง (SQLite / PostgreSQL) ---
+SQLALCHEMY_DATABASE_URL = "sqlite:///./chani_core.db"
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-shared_plugin_registry: List[dict] = [
-    {"plugin_id": "p_01", "name": "Advanced Math Solver", "author": "Developer_A", "endpoint": "/api/plugins/math"},
-    {"plugin_id": "p_02", "name": "Card Game Rules Engine", "author": "Developer_A", "endpoint": "/api/plugins/card"}
-]
+class DBPlugin(Base):
+    __tablename__ = "plugins"
+    id = Column(Integer, primary_key=True, index=True)
+    plugin_id = Column(String, unique=True, index=True)
+    name = Column(String, index=True)
+    author = Column(String)
+    description = Column(Text)
 
+Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# --- 2. โครงสร้างข้อมูล (Pydantic Models) ---
 class UserQueryRequest(BaseModel):
     query: str
     target_capability: Optional[str] = None
+    math_expression: Optional[str] = None # สำหรับระบบคำนวณขั้นสูง
+    use_external_api: bool = False      # สำหรับดึง API ภายนอก
 
 class PublishCapabilityRequest(BaseModel):
+    plugin_id: str
     capability_name: str
     description: str
+
+# ฐานข้อมูลผู้ใช้จำลองสำหรับการตรวจสอบสิทธิ์
+fake_users_db = {
+    "user_token_alpha_123": {"username": "Developer_A", "role": "creator"},
+    "user_token_beta_456": {"username": "User_B", "role": "standard"}
+}
 
 def verify_user_token(authorization: Optional[str] = Header(None)):
     if not authorization or authorization not in fake_users_db:
         raise HTTPException(status_code=401, detail="Invalid or missing authentication token.")
     return fake_users_db[authorization]
 
+# --- 3. ฟังก์ชันระบบคำนวณขั้นสูง (Advanced Math Engine) ---
+def advanced_math_calculation(expression: str) -> float:
+    try:
+        # ป้องกันความปลอดภัยเบื้องต้น อนุญาตเฉพาะฟังก์ชันคณิตศาสตร์ที่ปลอดภัย
+        allowed_globals = {"__builtins__": None, "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "pi": math.pi, "pow": pow}
+        result = eval(expression, allowed_globals, {})
+        return float(result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Math calculation error: {str(e)}")
+
+# --- 4. Endpoints หลักของระบบ ---
 @app.post("/chani/platform/interact")
-async def interact_with_chani_core(request: UserQueryRequest, current_user: dict = Depends(verify_user_token)):
-    matched_plugin = next((p for p in shared_plugin_registry if request.target_capability and request.target_capability.lower() in p['name'].lower()), None)
+async def interact_with_chani_core(request: UserQueryRequest, db: Session = Depends(get_db), current_user: dict = Depends(verify_user_token)):
+    math_result = None
+    external_data = None
+    
+    # 1. หากมีการส่งสมการมา ให้ใช้ระบบคำนวณขั้นสูง
+    if request.math_expression:
+        math_result = advanced_math_calculation(request.math_expression)
+        
+    # 2. หากผู้ใช้ต้องการเชื่อมต่อ API ภายนอก (ตัวอย่างดึงข้อมูลสภาพอากาศหรือข้อมูลกลาง)
+    if request.use_external_api:
+        try:
+            # ตัวอย่างการเรียก Public API ภายนอก
+            ext_res = requests.get("https://api.ipify.org?format=json", timeout=5)
+            external_data = ext_res.json()
+        except Exception:
+            external_data = {"error": "Unable to fetch external API data"}
+
+    # ดึงข้อมูลปลั๊กอินจากฐานข้อมูลจริง
+    db_plugins = db.query(DBPlugin).all()
     
     return {
         "status": "success",
         "processed_by": current_user["username"],
         "query": request.query,
-        "chani_core_response": f"Chani Core ประมวลผลคำขอสำเร็จสำหรับ '{current_user['username']}'",
-        "utilized_shared_capability": matched_plugin["name"] if matched_plugin else "Standard Core Engine",
-        "available_community_plugins": [p["name"] for p in shared_plugin_registry]
+        "math_result": math_result,
+        "external_api_response": external_data,
+        "database_plugins_count": len(db_plugins),
+        "available_plugins": [{"name": p.name, "author": p.author} for p in db_plugins]
     }
 
 @app.post("/chani/platform/publish-capability")
-async def publish_user_capability(request: PublishCapabilityRequest, current_user: dict = Depends(verify_user_token)):
-    new_plugin = {
-        "plugin_id": str(uuid.uuid4())[:8],
-        "name": request.capability_name,
-        "author": current_user["username"],
-        "description": request.description
-    }
-    shared_plugin_registry.append(new_plugin)
+async def publish_user_capability(request: PublishCapabilityRequest, db: Session = Depends(get_db), current_user: dict = Depends(verify_user_token)):
+    # บันทึกปลั๊กอินลงฐานข้อมูลจริง
+    existing_plugin = db.query(DBPlugin).filter(DBPlugin.plugin_id == request.plugin_id).first()
+    if existing_plugin:
+        raise HTTPException(status_code=400, detail="Plugin ID already exists.")
+        
+    new_db_plugin = DBPlugin(
+        plugin_id=request.plugin_id,
+        name=request.capability_name,
+        author=current_user["username"],
+        description=request.description
+    )
+    db.add(new_db_plugin)
+    db.commit()
+    db.refresh(new_db_plugin)
+    
     return {
         "status": "success",
-        "message": f"เผยแพร่ความสามารถ '{request.capability_name}' เข้าสู่ระบบ Chani Core สำเร็จ",
-        "total_shared_plugins": len(shared_plugin_registry)
+        "message": f"บันทึกความสามารถ '{request.capability_name}' ลงในฐานข้อมูลจริงสำเร็จ",
+        "plugin_id": new_db_plugin.plugin_id
     }
 
 @app.get("/chani/platform/capabilities")
-async def list_shared_capabilities():
+async def list_shared_capabilities(db: Session = Depends(get_db)):
+    db_plugins = db.query(DBPlugin).all()
     return {
         "platform": "Chani Core Ecosystem",
-        "shared_capabilities": shared_plugin_registry
+        "total_plugins": len(db_plugins),
+        "shared_capabilities": [{"plugin_id": p.plugin_id, "name": p.name, "author": p.author, "description": p.description} for p in db_plugins]
     }
 
 if __name__ == "__main__":
